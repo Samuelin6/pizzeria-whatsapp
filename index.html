@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🍕 Pizzería — Pedidos en Vivo</title>
+<script src="/socket.io/socket.io.js"></script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#0f0f0f;--surface:#1a1a1a;--surface2:#242424;
+    --border:rgba(255,255,255,0.08);--text:#f0f0f0;--muted:#888;
+    --orange:#F4A261;--green:#4ade80;--red:#E63946;--radius:12px;
+  }
+  body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+  /* TOPBAR */
+  .topbar{display:flex;align-items:center;justify-content:space-between;
+    padding:14px 24px;background:var(--surface);border-bottom:1px solid var(--border);
+    position:sticky;top:0;z-index:100}
+  .brand{display:flex;align-items:center;gap:10px}
+  .brand h1{font-size:16px;font-weight:600}
+  .brand p{font-size:11px;color:var(--muted)}
+  .status{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--green)}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  /* STATS */
+  .stats-bar{display:flex;gap:0;border-bottom:1px solid var(--border)}
+  .stat{flex:1;padding:16px 24px;border-right:1px solid var(--border)}
+  .stat:last-child{border-right:none}
+  .stat-num{font-size:28px;font-weight:600}
+  .stat-num.orange{color:var(--orange)}
+  .stat-num.green{color:var(--green)}
+  .stat-label{font-size:11px;color:var(--muted);margin-top:2px}
+  /* GRID */
+  .orders-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));
+    gap:14px;padding:20px 24px}
+  /* CARD */
+  .card{background:var(--surface);border:1px solid var(--border);
+    border-radius:var(--radius);padding:16px;animation:drop .35s ease;
+    position:relative;overflow:hidden}
+  .card::before{content:'';position:absolute;left:0;top:0;bottom:0;
+    width:3px;background:var(--orange);border-radius:2px 0 0 2px}
+  .card.done::before{background:var(--green)}
+  @keyframes drop{from{opacity:0;transform:translateY(-14px)}to{opacity:1;transform:translateY(0)}}
+  .card-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+  .card-id{font-size:14px;font-weight:600}
+  .card-time{font-size:11px;color:var(--muted);margin-top:1px}
+  .pill{font-size:11px;padding:3px 10px;border-radius:20px;font-weight:500}
+  .pill-new{background:rgba(244,162,97,.15);color:var(--orange)}
+  .pill-done{background:rgba(74,222,128,.12);color:var(--green)}
+  .items{margin-bottom:12px}
+  .item{display:flex;justify-content:space-between;font-size:13px;
+    padding:4px 0;border-bottom:1px solid var(--border)}
+  .item:last-child{border:none}
+  .item-price{color:var(--muted);font-size:12px}
+  .card-footer{display:flex;align-items:center;justify-content:space-between}
+  .cliente{font-size:11px;color:var(--muted)}
+  .total{font-size:15px;font-weight:600}
+  .btn-listo{font-size:12px;padding:6px 14px;border-radius:8px;
+    border:1px solid rgba(74,222,128,.4);background:rgba(74,222,128,.08);
+    color:var(--green);cursor:pointer;font-family:inherit;transition:background .15s}
+  .btn-listo:hover{background:rgba(74,222,128,.2)}
+  .entrega-tag{font-size:11px;color:var(--muted);margin-bottom:8px}
+  /* EMPTY */
+  .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;
+    min-height:300px;color:var(--muted);gap:10px;font-size:13px}
+  .empty .icon{font-size:48px;opacity:.3}
+  /* ALERTA sonido visual */
+  @keyframes flash{0%,100%{background:var(--surface)}50%{background:#2a1f0a}}
+  .card.new-flash{animation:drop .35s ease, flash 1s ease 0.35s 2}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">
+    <span style="font-size:22px">🍕</span>
+    <div>
+      <h1>Pizzería — Pedidos en Vivo</h1>
+      <p>Pantalla de cocina · Actualización automática</p>
+    </div>
+  </div>
+  <div class="status">
+    <div class="dot"></div>
+    <span id="statusTxt">Conectando...</span>
+  </div>
+</div>
+
+<div class="stats-bar">
+  <div class="stat">
+    <div class="stat-num orange" id="cntPend">0</div>
+    <div class="stat-label">Pendientes</div>
+  </div>
+  <div class="stat">
+    <div class="stat-num green" id="cntListo">0</div>
+    <div class="stat-label">Listos hoy</div>
+  </div>
+  <div class="stat">
+    <div class="stat-num" id="cntTotal">$0.00</div>
+    <div class="stat-label">Ventas hoy</div>
+  </div>
+</div>
+
+<div id="container">
+  <div class="empty" id="emptyMsg">
+    <span class="icon">🍕</span>
+    <span>Esperando pedidos de WhatsApp...</span>
+    <span style="font-size:11px">Los pedidos llegan automáticamente</span>
+  </div>
+</div>
+
+<script>
+const socket = io();
+let pend = 0, listos = 0, ventas = 0;
+
+socket.on('connect', () => {
+  document.getElementById('statusTxt').textContent = 'Conectado';
+});
+socket.on('disconnect', () => {
+  document.getElementById('statusTxt').textContent = 'Desconectado — reconectando...';
+  document.getElementById('statusTxt').style.color = '#f87171';
+});
+
+socket.on('nuevo_pedido', (p) => {
+  const empty = document.getElementById('emptyMsg');
+  if (empty) empty.remove();
+
+  pend++;
+  ventas += p.total;
+  actualizarStats();
+
+  const grid = getGrid();
+  const card = document.createElement('div');
+  card.className = 'card new-flash';
+  card.id = 'card-' + p.id;
+
+  const itemsHTML = p.items.map(i =>
+    `<div class="item">
+      <span>${i.cantidad}x ${i.nombre}</span>
+      <span class="item-price">$${i.precio.toFixed(2)}</span>
+    </div>`
+  ).join('');
+
+  card.innerHTML = `
+    <div class="card-top">
+      <div>
+        <div class="card-id">#${String(p.id).padStart(3,'0')}</div>
+        <div class="card-time">${p.hora}</div>
+      </div>
+      <span class="pill pill-new" id="pill-${p.id}">Nuevo</span>
+    </div>
+    <div class="entrega-tag">${p.esLlevar ? '🛍️ Para llevar' : '🛵 A domicilio'}</div>
+    <div class="items">${itemsHTML}</div>
+    <div class="card-footer">
+      <div>
+        <div class="cliente">📱 ${p.cliente}</div>
+        <div class="total">$${p.total.toFixed(2)}</div>
+      </div>
+      <button class="btn-listo" onclick="marcarListo(${p.id}, ${p.total})">✓ Listo</button>
+    </div>
+  `;
+
+  grid.insertBefore(card, grid.firstChild);
+
+  // Notificación del navegador
+  if (Notification.permission === 'granted') {
+    new Notification('🍕 Nuevo pedido #' + String(p.id).padStart(3,'0'), {
+      body: `$${p.total.toFixed(2)} · ${p.esLlevar ? 'Para llevar' : 'A domicilio'}`,
+    });
+  }
+});
+
+socket.on('pedido_listo', (id) => {
+  const card = document.getElementById('card-' + id);
+  if (!card) return;
+  card.classList.add('done');
+  const pill = document.getElementById('pill-' + id);
+  if (pill) { pill.textContent = 'Listo ✓'; pill.className = 'pill pill-done'; }
+  const btn = card.querySelector('.btn-listo');
+  if (btn) btn.remove();
+});
+
+function marcarListo(id, total) {
+  socket.emit('pedido_listo', id);
+  pend = Math.max(0, pend - 1);
+  listos++;
+  actualizarStats();
+}
+
+function actualizarStats() {
+  document.getElementById('cntPend').textContent  = pend;
+  document.getElementById('cntListo').textContent = listos;
+  document.getElementById('cntTotal').textContent = '$' + ventas.toFixed(2);
+}
+
+function getGrid() {
+  let g = document.getElementById('pedidosGrid');
+  if (!g) {
+    const c = document.getElementById('container');
+    g = document.createElement('div');
+    g.id = 'pedidosGrid';
+    g.className = 'orders-grid';
+    c.appendChild(g);
+  }
+  return g;
+}
+
+// Pedir permiso para notificaciones
+window.onload = () => {
+  if (Notification.permission === 'default') Notification.requestPermission();
+};
+</script>
+</body>
+</html>
